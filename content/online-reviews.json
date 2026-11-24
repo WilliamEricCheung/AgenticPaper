@@ -1,0 +1,695 @@
+[
+  {
+    "id": "Agentix",
+    "overview": "Agentix 将多个相关 LLM 调用看成一个持续执行的程序，在推理服务层维护程序状态，并以程序的累计服务时间安排调用优先级。它针对的问题是：单次调用看起来调度公平，整个 Agent 却可能反复排队。论文把程序级调度、低开销抢占与跨引擎缓存亲和路由组合起来，为不预先声明执行图的动态 Agent 程序提供通用服务底座。",
+    "scenario": "面向聊天、ReAct、并行搜索等共享推理服务的在线程序。一个程序可以包含顺序调用、并行分支及工具或人工交互；执行图随运行展开，调度器事先不知道程序总长度。目标是降低整个程序的完成延迟，并提高给定延迟下可承载的程序吞吐。",
+    "motivation": "传统 vLLM 等引擎把每次 LLM 调用独立排队，既可能让短调用被长调用阻塞，也无法识别某次调用属于已执行很久的程序。请求级 MLFQ 能缓解单次调用阻塞，但缺少跨调用历史；跨实例均衡负载又可能破坏长上下文的前缀复用。因此需要同时考虑程序进度、抢占开销和缓存局部性。",
+    "mechanism": "通过 stateful session API 和 process table 动态记录程序 DAG、累计执行与等待时间；单线程使用程序累计服务信息，多线程利用关键路径信息形成优先级。将优先级离散化为多级队列，结合时间片、程序级反饥饿与批量 KV swap 降低抢占成本。路由时短请求偏向负载均衡，长请求保留程序亲和，避免为了均衡重复计算大前缀。",
+    "evaluation": "正式版 §6 在 GCP 的 8×A100-SXM4-80GB 节点上实验：Llama-3.1-8B、70B 和 Falcon-180B 分别使用 1、4、8 卡。工作负载包括 ShareGPT、BFCL、LATS/MCTS 及混合程序，以程序为单位采样并生成 Poisson 到达。基线为 vLLM 0.6.1、开启 chunked prefill/prefix cache/multi-step 的 vLLM-opt，以及请求级 MLFQ；另评估多引擎路由。主要测程序级 token latency、尾延迟与吞吐。",
+    "limitations": "贡献集中在 LLM 调用的调度与路由，并不负责完整 Sandbox 生命周期；论文的程序级 token latency 也不能直接替代任务成功率或训练质量指标。",
+    "evidence": [
+      {
+        "section": "§1–3：程序抽象与动机",
+        "pages": [
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "note": "正式 PDF 第 1 页为会议封面，正文从第 2 页开始。"
+      },
+      {
+        "section": "§4–5：调度、路由和实现",
+        "pages": [
+          7,
+          8,
+          9,
+          10
+        ],
+        "note": "程序历史、多级队列、反饥饿和 KV 传输。"
+      },
+      {
+        "section": "§6.1–6.3：工作负载与实验设置",
+        "pages": [
+          10,
+          11,
+          12
+        ],
+        "note": "模型对应 GPU 数、基线和指标。"
+      }
+    ]
+  },
+  {
+    "id": "2602.13692",
+    "overview": "ThunderAgent 用一个跨推理和工具执行的 Agentic Program 抽象，联合管理 KV 缓存、程序准入、跨节点放置和工具环境生命周期。核心不是无限保留每个 Agent 的上下文，而是在内存压力下明确暂停部分程序，使正在推进的程序能够有效复用缓存；同时提前准备环境，并在程序结束时回收资源。它覆盖在线 Agent 推理，也直接实验了离线 RL rollout。",
+    "scenario": "面向 coding、路由与科学研究 Agent，以及多节点批量 rollout。GPU 节点负责模型推理，独立 CPU 集群承载 Docker 工具环境；程序在 reasoning 与 acting 之间交替，既占用不断增长的 KV，也依赖跨轮保留的工具环境。",
+    "motivation": "请求级引擎在工具等待时难以区分暂时停顿与程序结束，高并发下反复驱逐有用 KV。只用工具时长设置保留期限，也会遇到长尾调用、持续增长的上下文和跨节点内存不均衡。工具编排与推理生命周期脱节还会导致环境启动串行等待和磁盘资源泄漏，单独替换推理内核无法解决这些问题。",
+    "mechanism": "程序元组记录 ID、上下文长度、工具环境集合、放置、reasoning/acting 阶段和 active/paused/terminated 状态。根据 KV 工作集控制活跃程序，优先暂停工具阶段程序；全局等待队列允许恢复时重新放置，以缓解节点间内存倾斜。恢复优先级结合时间衰减，环境异步准备与推理调度重叠，终止信号驱动环境垃圾回收。",
+    "evaluation": "§5 使用 SWE-bench Lite 上的 mini-SWEAgent/OpenHands、HLE 上的 ToolOrchestra、ScienceAgentBench 上的 OpenHands。GLM-4.6 355B 与 Qwen3 235B 以 FP8、TP8 部署在 8×H100 节点；ToolOrchestra 的 Qwen3-8B FP16 使用单 RTX 5090。rollout 使用两个 8×H100 节点。在线对比 vLLM、Continuum，分布式 rollout 对比 vLLM＋SGLang Gateway；指标包括 step/min、KV 命中与端到端延迟分解。",
+    "limitations": "主实验有大量 GPU，但程序准入与环境回收可单独研究。论文报告的 rollout 吞吐提升不等于证明策略更新或最终训练质量改善；部分收益依赖环境准备成本和工具时长分布。",
+    "evidence": [
+      {
+        "section": "§2–3：程序资源与瓶颈",
+        "pages": [
+          3,
+          4,
+          5
+        ],
+        "note": "KV thrashing、节点不均衡和工具生命周期。"
+      },
+      {
+        "section": "§4：Program abstraction 与资源管理",
+        "pages": [
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "note": "暂停恢复、全局队列、异步准备与回收。"
+      },
+      {
+        "section": "§5.1–5.4：实验",
+        "pages": [
+          9,
+          10,
+          11
+        ],
+        "note": "在线与 rollout 的硬件、模型和基线分开列出。"
+      }
+    ]
+  },
+  {
+    "id": "2604.26963",
+    "overview": "MARS 研究显存紧张时 Agent Serving 的 KV thrashing：并发越大不一定吞吐越高，因为未完成工作流的上下文会被不断驱逐和重建。系统在引擎外控制哪些完整工作流进入，在引擎内优先推进已准入工作流并协调 KV 回收，用较合适的工作集换取更高的任务级 SLO goodput。它适合作为单卡或少量 GPU 下研究准入控制的直接参考。",
+    "scenario": "面向自托管、长上下文、多轮工具调用的 Agent 服务。多个根工作流及其子会话共享一份受限 KV 池，工具执行会暂时打断模型调用；目标是任务从提交到结束的延迟，以及相对各任务独占执行时间定义的 SLO 达标率。",
+    "motivation": "大批量请求调度只看到当前调用，容易把总 KV 需求推到显存上限之外，使等待工具的工作流丢失前缀并在返回后重新 prefill。程序级排序或 TTL 保留并没有同时约束新工作流准入和准入后的上下文增长。单纯提升 GPU 利用率可能将资源消耗在反复重建上，最终降低真正按时完成的任务数量。",
+    "mechanism": "外部 admission controller 用初始前缀需求与引擎反馈的实时可用 KV 空间约束活跃根工作流；Agent-centric scheduler 在引擎内协调 prefill 分配、turn 完成和 KV 回收，处理工作流进入后继续增长的上下文。frontend 仍掌控工具、子会话和终止，root job ID 将它们关联起来，形成“准入后尽量推进完成”的工作集管理。",
+    "evaluation": "§7 使用 Qwen3-Coder-30B-A3B-Instruct 与 GPT-OSS-120B。配置分别包括单 H200 NVL 144 GiB、单 H100 NVL 96 GiB，以及 4×RTX A5000 24 GiB（TP4）。从 SWE-bench、GitTaskBench、Terminal-Bench、RepoBench、∞Bench 构造不同上下文长度的工作负载，另接入 OpenHands、OpenCode、Codex。基线包括 FCFS、LightLLM、Autellix、InferCept、Continuum 及其动态变体；主要在同一修改版 vLLM V1 中比较。",
+    "limitations": "应区分统一后端上的重实现基线与原系统原生配置。任务级 SLO 采用论文设定的独占时间倍数；结论主要针对显存压力，不意味着任意低负载都值得限制并发。",
+    "evidence": [
+      {
+        "section": "§1–2：工作集压力与 goodput",
+        "pages": [
+          1,
+          2,
+          3
+        ],
+        "note": "将性能目标从请求吞吐转到完整工作流。"
+      },
+      {
+        "section": "§3–6：两级控制与 frontend 接入",
+        "pages": [
+          4,
+          5,
+          6,
+          7
+        ],
+        "note": "准入、调度与 KV 回收的职责边界。"
+      },
+      {
+        "section": "§7.1–7.5：实验",
+        "pages": [
+          7,
+          8,
+          9
+        ],
+        "note": "模型、硬件、统一基线和全栈实验。"
+      }
+    ]
+  },
+  {
+    "id": "2511.02230",
+    "overview": "Continuum（当前 PDF 题名拼作 Continnum）关注工具调用间隙的 KV 缓存保留。它指出，驱逐的代价不仅是下一轮重算或从 CPU 载入，还包括重新等待显存和调度的时间。系统为缓存设置自适应 TTL，并配合程序级先来先服务，在避免无限占用显存的同时维持跨轮执行连续性，是理解工具等待与 KV 调度关系的一个简单基线。",
+    "scenario": "面向 coding 与函数调用 Agent 的多轮共享推理。工具时长有长尾，但许多调用很快返回；同一程序下一轮通常复用已有前缀。系统可以只用 GPU KV，也可以叠加 CPU DRAM offload，关注整段程序的 JCT 而非单轮 TTFT。",
+    "motivation": "end-of-turn eviction 将工具调用误当作请求彻底结束，导致下一轮重复 prefill 或重载。InferCept 一类成本判断主要比较缓存保存与恢复，可能低估返回后重新排队的累积代价；无限等待工具返回则会让异常长调用长期占据 GPU。需要在重用收益、排队代价和工具时长不确定性之间设置有限保留窗口。",
+    "mechanism": "从响应中识别工具类型，通过相邻请求时间间隔积累工具时长历史；结合预先测得的重算/重载成本和程序连续性代价求 TTL。工具等待期间固定相关 KV，超时解除，返回请求按程序级 FCFS 优先推进。调度器同时处理下一轮已到达但尚未调度的情况，并在空间不足时解除部分 pin，避免保留策略造成死锁。",
+    "evaluation": "§6 的 trace replay 包括 SWE-bench、BFCL v4 Web Search 和 OpenHands；Llama-3.1-8B 使用单 A100/B200/H100，Gemma-3-12B 使用单 A100，70B 使用 4×B200。对比 vLLM 0.10.2、Autellix/PLAS、InferCept，并用 LMCache 0.3.7 研究 DRAM offload。另在内部 H100 平台运行 500 个 SWE-bench Verified 真实任务，对比 SGLang 与 Dynamo；这一组不应与单卡重放配置混用。",
+    "limitations": "大量对比以预先记录的轨迹重放进行，真实任务实验另列。TTL 依赖工具类型历史与模型硬件 profiling；论文模板中的占位出版信息不能用于认定正式录用。",
+    "evidence": [
+      {
+        "section": "§1、§3：动机",
+        "pages": [
+          1,
+          4,
+          5
+        ],
+        "note": "驱逐恢复与跨轮排队的区别。"
+      },
+      {
+        "section": "§4–5：TTL 与调度实现",
+        "pages": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "note": "有限 pin、程序顺序和空间不足处理。"
+      },
+      {
+        "section": "§6：实验",
+        "pages": [
+          8,
+          9,
+          10
+        ],
+        "note": "区分重放、CPU offload 和真实 SWE-Agent。"
+      }
+    ]
+  },
+  {
+    "id": "2611.25112",
+    "overview": "TripleKV 把 Agent 的 KV 缓存管理扩展到 GPU、主存和 SSD 三层。它利用下一轮必然重用已知前缀这一特点，只预测“何时回来”，将 SSD 读取提前到工具执行窗口，并只预取到主存，避免提前抢占显存。再通过减少 GPU/主存重复副本和保护预取块，降低工具返回后的尾部首 token 延迟。",
+    "scenario": "面向大量并发的网页研究、终端编码和文档问答 Agent。并发工作集超过 GPU 甚至主存容量，SSD 成为必要的 KV 后备层；服务的关键路径因此不仅包含推理，也包含工具返回后的缓存恢复。",
+    "motivation": "LRU 将工具等待中的缓存视为不活跃数据，返回时才从 SSD 读取会阻塞推理。GPU 内固定缓存或提前预取又会与正在运行的请求争夺稀缺显存；包含式主存缓存保留 GPU 已有副本，进一步浪费容量。论文将“已知要取什么”和“需要预测什么时候取”分开处理。",
+    "mechanism": "Predict 在 Harness 侧使用工具类型、参数、历史及可用的实时输出估计完成时间；Prefetch 将已知前缀从 SSD 异步读入主存，而不是 GPU；Protect 通过多队列和有界保护期避免预取块被过早驱逐。主存改为非包含式，配合 victim-cache refill，GPU 中的数据不必长期重复占用主存。",
+    "evaluation": "每次实验用单 H100 NVL 94GB，运行 BF16 Qwen3-30B-A3B；KV 预算为约 32 GiB HBM、64 GiB DRAM 和 1 TiB SSD RAID。对 DRB、GAIA、Terminal-Bench 4、BC+ 各取 50 个真实任务轨迹，再一致重放 token 长度和工具时长。基线为增加 SSD 层的 vLLM、TokenCake、Continuum＋LMCache，以及已知真实工具时长的 Oracle；测 TTFT、吞吐和关键路径 SSD 读取比例。",
+    "limitations": "固定 64 GiB DRAM 刻意构造缓存压力，SSD 不发生容量驱逐；收益不能直接外推到主存足以容纳全部工作集的部署。预测包含工具特定逻辑，需评估新增工具的覆盖和误差。",
+    "evidence": [
+      {
+        "section": "§3：三级缓存瓶颈",
+        "pages": [
+          3,
+          4,
+          5
+        ],
+        "note": "容量、包含式缓存与恢复等待。"
+      },
+      {
+        "section": "§4–5：Predict/Prefetch/Protect",
+        "pages": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "note": "预取目标是主存而非显存。"
+      },
+      {
+        "section": "§6.1–6.2：实验",
+        "pages": [
+          8,
+          9
+        ],
+        "note": "单卡、三层预算、轨迹与基线。"
+      }
+    ]
+  },
+  {
+    "id": "2609.18849",
+    "overview": "这篇工作把工具时长问题从“推理服务预测工具什么时候结束”转为“工具运行时主动报告进度”。作者发现，编译、测试和下载通常已产生进度线索，但 Harness、quiet 参数和管道会隐藏这些信息。系统增加独立进度通道，将工作量比例或接近结束的信号送给 KV 管理器，同时尽量保持 Agent 看到的输出不变。",
+    "scenario": "面向工具等待显著、长尾调用占据主要时间的 coding Agent。GPU 在等待期间需要决定是否保留、卸载或提前取回 KV；本文重点是工具执行环境与推理引擎之间的信息接口，并非重新设计模型计算内核。",
+    "motivation": "仅依靠工具名、历史平均时长或调用前声明无法捕获运行时共置干扰、远程服务变化和实际工作量。继续改进静态预测器不一定补上缺失信息；另一方面，直接把更多日志返回给 Agent 会改变上下文和行为。需要把供调度使用的运行进度从供 Agent 推理使用的结果中分离出来。",
+    "mechanism": "Harness 为调用分配 ID，wrapper 从输出流、构建目录、计数器和 dry-run 信息生成进度事件；区分可估计剩余工作比例的强信号与仅提示即将结束的弱信号。进度旁路不改变正常结果通道，对脚本插桩另做输出和退出码核对。引擎通过小型 hint 接口使用剩余时间调整 KV 保留、卸载及回迁，并在错误报告时回退。",
+    "evaluation": "证据分为工具语料 census、真实任务行为检查、运行中预测误差及服务端重放。行为实验使用 100 个 SWE-bench Verified 任务；服务端在 4×H100 SXM 上比较 HBM-only 与 HBM＋DRAM 两种配置。对照包括 LRU、Continuum、CacheWise、TokenCake、InferCept 及真实返回时间 Oracle。核心测量为决策时刻剩余时间误差、post-tool TTFT p90、吞吐与重载量；§5.1 未清晰列出该重放配置的模型名称。",
+    "limitations": "信号覆盖取决于具体工具、输出抑制方式及进度是否可信；保持旁路输出不变与修改 Agent 生成脚本是不同干预，不能混称完全无行为变化。未提供的服务模型配置应保留为复现待核实项。",
+    "evidence": [
+      {
+        "section": "§1–2：静态预测局限与工具信号",
+        "pages": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "note": "研究对象是可观测进度，而非只调预测模型。"
+      },
+      {
+        "section": "§3–4：旁路与行为核验",
+        "pages": [
+          7,
+          8,
+          9,
+          10,
+          11,
+          12
+        ],
+        "note": "wrapper、强弱信号与真实任务检查。"
+      },
+      {
+        "section": "§5：KV 服务实验",
+        "pages": [
+          12,
+          13
+        ],
+        "note": "4 卡配置、两种内存层级及基线。"
+      }
+    ]
+  },
+  {
+    "id": "2603.10342",
+    "overview": "AgentServe 面向单张消费级 GPU 上的小模型 Agent，将推理阶段细分为冷 prefill、工具返回后的 resume prefill 和短 decode。系统隔离重型冷 prefill，并根据 decode 的 TPOT 动态调整 resume prefill 预算和 SM 配额，通过预建 CUDA Green Context 避免多引擎拆分成本。它的价值在于把“少量 GPU 的稳定交互延迟”变成明确的系统目标。",
+    "scenario": "面向本地部署的多个轻量 Agent 会话，例如隐私或成本约束下的工具调用应用。每个会话顺序执行模型与工具，但不同会话可在单卡重叠；长初始提示词、较短工具结果和短输出同时到来，稳定 token 输出比一味扩大 batch 更重要。",
+    "motivation": "将所有 prefill 同等处理会让昂贵冷 prefill 阻塞短 decode；单纯 chunking 会增加短 Agent 回合的调度边界，静态 SM 分区也难随突发负载变化。多进程式 prefill/decode 拆分在单卡上引入协调与带宽成本，通用多流或 MPS 又不能表达 Agent 阶段优先级。",
+    "mechanism": "请求管理器识别 cold、resume 和 decode；长 prefill 进入独立队列，短 resume 在 token budget 内与 decode 合批。反馈控制器监测 step-level TPOT，调整允许混入的 prefill token 数以及 decode 的最低 SM 保留量。执行层使用专用 CPU 线程和预先建立的 CUDA Green Context 槽位切换资源分配，保持共享权重与 KV 的一致性。",
+    "evaluation": "实验分别使用单 RTX A5000 24GB 与单 RTX 5090 32GB，模型为 Qwen2.5-3B/7B、Llama-3-8B。ToolBench 派生工作负载以 3–6 个并发 Agent 为主，RTX 5090 另测试 8192-token 上下文及 6–8 并发压力。对比 SGLang 0.5.3rc0、vLLM 0.10.2rc1、llama.cpp b5943，并尽可能统一前缀缓存和输入输出；报告 TTFT/TPOT p50/p95、输出吞吐和会话级联合 SLO。",
+    "limitations": "评估明确面向本地小模型工具任务，不代表大规模 coding Agent 的完整工作负载。SM 分区不能自动等同于所有共享硬件资源的完全隔离；实现和驱动兼容性仍需在目标 GPU 上验证。",
+    "evidence": [
+      {
+        "section": "§I–II：阶段特征与动机",
+        "pages": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "note": "cold/resume/decode 的资源特性。"
+      },
+      {
+        "section": "§III：调度和 Green Context 实现",
+        "pages": [
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "note": "TPOT 反馈、预算和预建槽位。"
+      },
+      {
+        "section": "§IV：实验",
+        "pages": [
+          8,
+          9,
+          10,
+          11
+        ],
+        "note": "单卡配置、并发范围和对照。"
+      }
+    ]
+  },
+  {
+    "id": "2610.14804",
+    "overview": "AgentWeave 研究由多个模型和工具模块组成的 Agent 工作流。与把每个模块固定放到不同 GPU 的流水线相比，它把模块聚合部署到全部设备，再将长请求拆成可交错执行的数据流单元，减少流水线空泡和整批阻塞。关键贡献是让分解遵守模块语义与依赖，并动态选择分解粒度，而不是简单把所有输入切成小块。",
+    "scenario": "面向 RAG、知识库 RAG、DeepSearch、多模态生成及动态 DeepResearch。这些工作流会调用不同大小的语言模型、embedding、reranker 或 diffusion 模块；多请求同时运行时，各模块的执行耗时和可并行性差异很大。",
+    "motivation": "模块分离部署容易因各阶段耗时不均形成 pipeline bubble；把所有模块聚合到全部设备虽然减少空闲，却让短请求等待同批长请求完成整个工作流。已有任务图优化或程序级 LLM 排序未直接解决聚合执行中的细粒度阻塞，而且错误切分查询或 rerank 输入可能改变结果语义。",
+    "mechanism": "以模块输入输出数据构建 flow dependency graph，辨认可独立分解、不可分解和有条件分解的数据流；对需要完整输入或中间汇总的模块补充 supplement dependencies。离线分析可分解规则并 profiling 成本，在线 flow-adaptive scheduler 在吞吐收益和调度开销之间选择粒度，执行一部分 subflow 后将剩余任务重新入队。",
+    "evaluation": "RAG/KB-RAG 在 TriviaQA 上使用 Qwen3-32B、Embedding-8B、Reranker-8B 与 4×A100；另测试 14B/4B/4B、8×A100 和 4×H200。DeepSearch 在 GAIA 上用 Qwen3-14B/4B 与 2×A100；多模态用 Qwen3-14B、Stable Diffusion 3 和 T2I-CompBench，亦为 2×A100。与 Ayo、Autellix 的分离部署比较，并补充动态 DeepResearch、重复实验和分解语义检查。",
+    "limitations": "需要应用 executor 提供可分解规则，不能自动对任意工具保证语义等价。论文用 LLM judge 检查 RAG 输出，仍含生成与评判误差；聚合所有模块的显存条件和通信代价也限制适用范围。",
+    "evidence": [
+      {
+        "section": "§1–2：聚合与分离部署的取舍",
+        "pages": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "note": "空泡和请求阻塞。"
+      },
+      {
+        "section": "§3：Flow decomposition",
+        "pages": [
+          5,
+          6,
+          7
+        ],
+        "note": "可分解性、补充依赖和在线粒度。"
+      },
+      {
+        "section": "§4、附录 D/F：实验与语义检查",
+        "pages": [
+          8,
+          9,
+          18,
+          19
+        ],
+        "note": "硬件模型配置与输出等价性边界。"
+      }
+    ]
+  },
+  {
+    "id": "2611.12304",
+    "overview": "Evolving Infra 面向大规模 Agent 推理集群，将计算角色切换与 KV 状态管理解耦。节点可以在 prefill 和 decode 间切换而不重启引擎，缓存则进入跨节点可读的主存池；在线规划器按实际计算需求调整 PD 比例，缓存目录再依据 Agent 分支、上下文压缩和结束事件识别未来仍会复用的数据。它连接了集群弹性和 Agent 上下文语义。",
+    "scenario": "面向 coding、数学和 computer-use 等混合 Agent 负载的 PD 分离集群。不同任务、模型和 Harness 的 prefill/decode 比例不同，且时间上发生变化；fork、sub-agent、compaction 和长暂停进一步改变前缀复用关系。",
+    "motivation": "固定角色引擎切换可能需要重启，原节点上的缓存又会随角色变化变得难以复用。仅按队列长度、总输入 token 或 KV 利用率规划资源，无法反映缓存命中后的真实计算需求；纯缓存亲和路由可能倾斜负载，LRU 又可能保留已被 compaction 丢弃的历史、驱逐仍在等待工具的活跃分支。",
+    "mechanism": "对称引擎共用可执行 prefill/decode 的调度循环，路由决定节点角色；共享 host-memory KV pool 保持角色变化后的可访问性，排队期间完成跨节点读取与 GPU 载入。集群 KV 目录维护分支引用和上下文版本，识别无用副本。在线学习 prefill/decode iteration-time model，据此规划 PD split，并联合执行复用感知的路由和驱逐。",
+    "evaluation": "主实验为 9 个各含 4×GB300 的节点（共 36 卡），GLM-5.2 与 Kimi K2.6 使用 NVFP4 权重、FP8 KV、TP4 及 MTP。任务为 mini-SWE-agent/PutnamBench、computer-use/OSWorld 2.0，以及保持前缀与工具间隔的 Claude Code trace replay。对比 Dynamo v1.5.1 和经搜索得到的最佳静态 SGLang PD split；附录扩展到最多 256×GB300，并另比较 H200 环境，不能把最大规模当成每张主图配置。",
+    "limitations": "完整复现资源需求很高；适合有限资源研究的是“计算角色与缓存存储解耦”等机制拆分。部分工作负载固定轨迹重放，在线适配收益依赖规划窗口、集群互联和上下文事件可见性。",
+    "evidence": [
+      {
+        "section": "§1–3：PD 切换与缓存误判",
+        "pages": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "note": "角色、计算需求和复用三个瓶颈。"
+      },
+      {
+        "section": "§4–5：共享 KV 与在线规划",
+        "pages": [
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "note": "对称引擎、分支引用和模型。"
+      },
+      {
+        "section": "§6.1、附录 C：实验设置",
+        "pages": [
+          11,
+          12,
+          30,
+          31,
+          32,
+          33
+        ],
+        "note": "主实验 36 卡与扩展实验分开。"
+      }
+    ]
+  },
+  {
+    "id": "2609.34432",
+    "overview": "这是一篇生产测量论文，而不是提出新调度器的系统论文。它将 session、任务和 LLM 请求关联起来，分析用户触发与自动触发、工作流结构与实际执行重叠，以及跨任务的上下文复用。最有价值的作用是检查研究假设：逻辑上有分支不等于 GPU 调用并行，任务边界也不一定是缓存亲和边界。",
+    "scenario": "面向通用 Agent 生产平台，任务覆盖编码、测试、数据分析、办公和自动运维。同一长期 session 内可以有多个目标明确的任务，每个任务再展开为多个模型请求和工具调用；研究将这三层语义与推理基础设施需求连接。",
+    "motivation": "请求级 token、到达率和缓存统计无法解释需求如何由任务触发方式和工作流组织产生。只看编码 Agent 或只看逻辑 DAG，也容易混淆分支宽度与真实执行并发。若错误地将整个 session 或单个 task 作为固定调度单位，可能损失跨任务复用，或忽略任务内部上下文重写。",
+    "mechanism": "从跨层 trace 重建任务触发、请求依赖及服务时间区间，分别度量工作量集中度、工作流深宽、工具相关等待和缓存命中。引入 episode 作为沿同一上下文历史持续、受保留窗口约束的 serving-affinity 单元；再用离线 retention model 研究不同等待类型和预算下的缓存保留取舍。贡献是实证观察和设计问题，而非已完成的在线控制算法。",
+    "evaluation": "分析连续两周约 1170 万模型请求、94.84 万 session，来源平台后端规模超过 1 万 GPU。公开的模型分布包括 GLM 5.2、DeepSeek V4 Pro/Flash、Kimi K2.7 等，本文未给出可直接复现的逐模型 GPU 型号/卡数部署表。对照主要是不同任务触发、工作流结构、等待类型及离线统一/差异化缓存保留方案；Copilot、TraceLab 用于研究范围比较，不是同机性能基线。",
+    "limitations": "单个平台两周数据不能代表全部 Agent 应用；逻辑 context residency 也不等于实测物理 KV 常驻量。episode 调度与在线自适应缓存属于后续方向，不能把离线分析写成已部署系统收益。",
+    "evidence": [
+      {
+        "section": "§1–3：研究范围与数据",
+        "pages": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "note": "session/task/request、生产 trace 与统计口径。"
+      },
+      {
+        "section": "§4–5：任务和工作流观察",
+        "pages": [
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "note": "触发、依赖图与实际执行重叠。"
+      },
+      {
+        "section": "§6：服务需求与 episode",
+        "pages": [
+          8,
+          9,
+          10,
+          11
+        ],
+        "note": "上下文复用、驻留和离线模型。"
+      }
+    ]
+  },
+  {
+    "id": "2610.37230",
+    "overview": "TAO 把“哪些 Agent 应恢复推理”和“放到哪个 GPU 节点”作为一个联合优化问题。它结合节点上的缓存复用价值、工具即将返回的就绪信息和会话 token 规模，为候选分配打分，再在容量限制下做动态规划。与逐个会话贪心选择节点相比，它同时考虑一批选择之间的容量竞争，并在真正执行前重新核对运行状态。",
+    "scenario": "面向 clustered GPUs 与 distributed CPUs 分离的服务：GPU 集群提供共享模型推理，外部 CPU 执行工具。会话可在工具阶段释放 GPU admission，之后在原节点或其他节点恢复；工具 CPU/RAM 不属于 TAO 的 GPU 容量预算。",
+    "motivation": "仅按缓存命中或节点负载放置，可能给尚未返回的工具会话预留容量；单独排序再贪心放置，也会错过更好的组合。已有 TTL 或时间衰减策略通常把工具时间折算成缓存/内存分值，却不明确表示近期是否真的需要推理。论文因此区分会话价值接口与联合决策器。",
+    "mechanism": "为会话—节点对构造按字典序比较的三元值：随时间衰减的缓存 credit、二元近端 tool readiness、token footprint。readiness 优先使用完成事件或直接时限，缺失时回退到历史估计。将容量离散化为多背包状态，动态规划联合选择和放置，异步求解后对 live state 重新验证。所谓精确性仅针对冻结、离散化后的问题。",
+    "evaluation": "DeepSeek-V4 Flash 部署在 2 节点×4 H100，Qwen3-32B 为 4 节点×2 H100；GLM-4.7 单节点实验用 8 H100。主要是 mini-SWE-agent 的 SWE-Lite/Verified，以及 Claude Code 的 Terminal-Bench 2.0。对比 vLLM RR、cache-aware routing、Dynamo、ThunderAgent，并做求解器/价值信号消融；测端到端 latency、TTFT 和 decode throughput。主表共 12 个模型—负载—并发配置，并非每项指标都胜过基线。",
+    "limitations": "动态规划最优不代表未知未来下全局最优；离散化、候选截断和观测误差都影响实际决策。工具资源本身由外部管理，不能把它理解为 CPU/GPU 联合资源分配系统。",
+    "evidence": [
+      {
+        "section": "§1–2：CGDC 与会话中断",
+        "pages": [
+          1,
+          2,
+          3
+        ],
+        "note": "GPU admission 与外部工具预算分离。"
+      },
+      {
+        "section": "§3：三元价值与动态规划",
+        "pages": [
+          3,
+          4,
+          5
+        ],
+        "note": "readiness、decay、离散化最优范围。"
+      },
+      {
+        "section": "§4.1–4.3：实验",
+        "pages": [
+          6,
+          7,
+          8
+        ],
+        "note": "模型拓扑、工作负载和对照。"
+      }
+    ]
+  },
+  {
+    "id": "2611.23558",
+    "overview": "Duru 关注共享推理基础设施下的 Agent 公平性：多个 Agent 即使获得相近 token 服务量，完整任务的相对减速也可能差很多。论文以独占执行成本和 processor-sharing 参考为基础定义 Agent 级归一化 slowdown，并让路由、准入和引擎调度共同使用这一信号。它同时区分公平分配与容量不足，后者通过 SLO 驱动扩容处理。",
+    "scenario": "面向异构、多轮、可带子 Agent 的共享在线服务。不同请求的 prefill、decode 和缓存复用成本不同，等待又会沿依赖链累积；希望在控制吞吐损失的同时，降低最受影响 Agent 的尾部减速，而不只是改善平均延迟。",
+    "motivation": "token 公平不能代表执行成本公平，单请求延迟隔离也不能约束完整 Agent 的累积等待。保留 KV、缓存亲和路由和严格准入可能优待已占有资源的会话，并把不公平从 GPU 干扰转移成路由队列饥饿。仅在某一层优化或简单 PD 分离，都可能让另一层成为新的瓶颈。",
+    "mechanism": "在线 fairness tracker 结合实测等待、已完成推理和离线延迟模型估计 Agent 的 slowdown deficit，并把根任务及子 Agent 聚合。router 与 worker 优先推进欠服务者，容量不足时允许低优先级 backfill；达到饥饿阈值时例外准入，避免缓存持有者永久占满工作集。另用未归一化 slowdown 的 SLO 信号决定扩容，区分资源分配与容量补充。",
+    "evaluation": "真机平台为 8×H100 SXM 80GB 和 8×MI300X 192GB；模型包括 Qwen3-Coder-30B-A3B、Llama-3.3-70B、DeepSeek-V4-Flash。使用 Azure Copilot、TraceLab、AgentX 轨迹，vLLM 0.28.0 与每 worker 128GiB 的 LMCache offload。runtime 基线为 FCFS、Continuum、Oracle CacheWise；routing 基线为 Dynamo KV-aware、llm-d VTC、ThunderAgent。8–256 GPU 扩展和动态扩容主要由 DynoSim 仿真。",
+    "limitations": "吞吐约束是设计目标而非严格保证；公平性依赖独占成本估计和参考模型。必须区分真机 8 卡结果与大规模仿真，且扩容达成 SLO 会消耗额外 GPU，不能当作固定预算下的纯调度收益。",
+    "evidence": [
+      {
+        "section": "§1、§3–4：公平性定义与干扰",
+        "pages": [
+          1,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "note": "Agent slowdown、缓存优待和排队转移。"
+      },
+      {
+        "section": "§5：跨层控制",
+        "pages": [
+          7,
+          8,
+          9
+        ],
+        "note": "tracker、例外准入与 SLO 扩容。"
+      },
+      {
+        "section": "§6–7：实验",
+        "pages": [
+          9,
+          10,
+          11
+        ],
+        "note": "真机平台、基线以及仿真范围。"
+      }
+    ]
+  },
+  {
+    "id": "2604.16682",
+    "overview": "KAIROS 研究 Agent 推理的节电问题。多轮上下文在工具等待期间仍占显存，降低 GPU 频率不仅增加计算时间，还可能让未完成任务积累，最终触发 KV thrashing，反而损害能效。系统将上下文增长作为控制信号，联合调整频率、实例并发和跨实例放置，在满足性能目标的前提下减少功率。",
+    "scenario": "面向持续到达的 coding、数据分析和终端 Agent 服务。单个 Agent 由多轮模型—工具交互组成，生命周期与上下文长度差异大；可部署一个或多个推理实例，关注每 Agent 性能目标与平台平均功率的共同满足。",
+    "motivation": "面向单轮请求的 DVFS 方法常把降频看作可利用时延余量的局部动作，但 Agent 的降速会跨多轮累积并改变同时驻留的上下文数量。若只看利用率或瞬时 token 速度，可能越过显存稳定区进入重算、驱逐循环；平均均匀分配到所有 GPU 也可能让每卡都付出非空闲功率。",
+    "mechanism": "按 Agent 追踪上下文与执行进度，依据显存占用和性能反馈选择频率，并在 SLO 风险下临时提升频率。并发控制限制实例中的总上下文需求，避免降频后任务积累引发 thrashing；context-aware router 在容量允许时整合负载，让部分实例保持低功率空闲，同时避免把剩余实例推入不稳定区。",
+    "evaluation": "基于 vLLM 0.14.0 和 Zeus，主模型 Qwen3-Coder-30B FP8，补充 Ministral-3-14B；每实例使用单 H100，另评估四实例路由。通过 Harbor 的 mini-swe-agent、terminus-2 运行 SWE-bench Verified、DABStep、Terminal-Bench 2.0。对比无频率控制、去除 thrashing avoidance 的消融、独立单实例策略及 round-robin routing；测功率、Agent 吞吐/SLO 和控制开销。正文同时写 H100 NVL 与每实例 80GB，硬件口径需复现时核实。",
+    "limitations": "节电幅度取决于 SLO 松紧和负载，逼近设备性能上限时降频空间有限。论文主要报告功率与性能权衡，不能只看平均功率就推断每个完成任务的能耗；GPU 规格表述也应与目标机器实测分开。",
+    "evidence": [
+      {
+        "section": "§1、§3：降频与上下文压力",
+        "pages": [
+          1,
+          3,
+          4,
+          5
+        ],
+        "note": "降频导致积压和 thrashing 的链条。"
+      },
+      {
+        "section": "§5–6：控制机制",
+        "pages": [
+          6,
+          7,
+          8
+        ],
+        "note": "频率、并发、实例放置的协同。"
+      },
+      {
+        "section": "§7–8：实验",
+        "pages": [
+          8,
+          9,
+          10,
+          11
+        ],
+        "note": "模型、Agent、功率基线及四实例实验。"
+      }
+    ]
+  },
+  {
+    "id": "2601.05109",
+    "overview": "Nalar 将 Agent 工作流代码与运行时执行策略分开：开发者保留普通 Python 调用，系统通过自动生成的 stub 和带上下文的 future，重建不断变化的依赖关系。全局控制器计算策略，本地控制器快速执行，使资源分配、请求优先级、迁移和 KV 生命周期能够依据整个工作流进度调整。它更接近 Agent 应用运行时，而非单一推理引擎优化。",
+    "scenario": "面向由多个模型、检索、工具和子 Agent 组成的动态应用，涵盖金融分析、语义路由和带测试反馈的编程流程。执行可能包含循环、重试和运行时 fan-out，组件的资源需求与排队时间不同，无法仅靠预声明静态 DAG 决定所有执行策略。",
+    "motivation": "框架通常把组件放置、通信和调用顺序提前绑定，局部队列不知道某次重试即将完成整个用户任务。严格会话亲和保留 KV，却可能产生负载不均；通用 future 只表达结果依赖，不包含 session 进度和推理缓存状态。要避免开发者自行编写大量跨层策略，需要可观察、可修订的运行时执行对象。",
+    "mechanism": "stub generator 保留 Python 接口，将组件调用转换成携带 dependencies、creator、executor、consumers 和 session ID 的 futures。两级控制架构结合全局周期性策略与本地事件执行，实现 late-binding placement、瓶颈驱动资源迁移和偏向进展较深请求的排序。KV 管理根据未满足依赖估计重用时间，选择 offload/prefetch，并在 session 结束时显式回收。",
+    "evaluation": "真机实验使用 2 个节点，每节点 4×A100 80GB、256GB DRAM、4TB SSD，节点间 100Gbps Ethernet；模型为工作流特定微调的 Llama-3-8B。三类负载是 FinQA 金融分析、Azure 请求模式驱动的路由流程和递归软件工程流程。对比 Ayo、CrewAI、AutoGen、LangGraph、Autellix；统一 vLLM 0.12 与 LMCache，并为多数静态基线搜索可行资源配置。另做策略消融和控制扩展性测试。",
+    "limitations": "需接入 stub/future 运行时，不能视作任意现有 Harness 的零改造后端。本文组件故障处理仍有状态会话等待或失败边界，不提供任意外部工具副作用的透明恢复。",
+    "evidence": [
+      {
+        "section": "§1–2：动态工作流动机",
+        "pages": [
+          1,
+          2,
+          3
+        ],
+        "note": "跨组件依赖、资源与状态。"
+      },
+      {
+        "section": "§3–5：future、两级控制及默认策略",
+        "pages": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "note": "普通 Python 接口与执行控制分离。"
+      },
+      {
+        "section": "§6：实验",
+        "pages": [
+          9,
+          10,
+          11
+        ],
+        "note": "8 卡两节点、工作流与基线配置。"
+      }
+    ]
+  },
+  {
+    "id": "2606.09613",
+    "overview": "AgentServeSim 把 Agent 程序作为仿真执行单位，使下一轮请求的释放时间由前一轮推理完成和工具时长共同决定。它补足普通 LLM 请求流模拟对跨轮 KV 状态和因果反馈的表达，再用真实 vLLM 实验校准。论文还将模拟器作为 CPU 上的策略评估器进行自动搜索，适合有限 GPU 预算下先筛选调度方案，但不能替代最终真实执行验证。",
+    "scenario": "面向多轮 coding 与函数调用程序的服务策略研究。需要比较 KV 保留、调度或路由策略改变后整个程序会怎样运行，而不只是让固定到达的独立请求经过不同队列；重点是调度影响下一轮到达的闭环因果关系。",
+    "motivation": "固定 request arrival trace 将后继调用时间视为输入，无法反映前一轮排队变慢或变快后带来的反馈。只按请求或通用 cache 建模也不能同时表达工具间隙保留和跨轮 residency。对每个策略都跑真实 GPU 代价高，但缺少校准的轻量模拟又可能错误评估长轨迹上的累积误差。",
+    "mechanism": "Program Control Block 保存跨轮状态，Program Orchestrator 在前序推理和工具结束后释放后继；Retention Plane 决定缓存寿命，Dispatch Plane 决定就绪请求的放置与顺序。以 LLMServingSim 2.0/ASTRA-Sim 为底座，策略接口与 vLLM adapter 共享；再用 OpenEvolve 修改策略代码，CPU 仿真输出 JCT 作为搜索适应度。",
+    "evaluation": "用 20 组模拟—真机配对验证：B200 上 Llama-3.1-8B TP1、70B TP2，以及 RTX PRO 6000 96GB 上 70B TP2，真实引擎为 vLLM 0.19。负载为 50 个 mini-SWE-agent/SWE-bench 程序和 100 个 BFCL v4 程序，五档 Poisson 到达率；固定 token 与工具时长，释放时间由执行决定。比较 LRU/TTL、FCFS/PLAS 及搜索所得策略；搜索运行 50 轮。",
+    "limitations": "真机校准每组只有单 serving instance，因此验证了 retention/scheduling，未验证跨实例 routing。搜索针对指定负载和硬件，获得的改进较小，不宜宣称普遍优于手工策略或 GPU-free 地验证所有真实 Agent 行为。",
+    "evidence": [
+      {
+        "section": "§1–3：程序级因果模型",
+        "pages": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "note": "PCB、两平面及 successor release。"
+      },
+      {
+        "section": "§4–5.1：仿真校准",
+        "pages": [
+          5,
+          6,
+          7
+        ],
+        "note": "20 个配对配置与硬件、工作负载。"
+      },
+      {
+        "section": "§5.2–5.3：策略比较和搜索",
+        "pages": [
+          7,
+          8
+        ],
+        "note": "低成本筛选的范围与收益。"
+      }
+    ]
+  },
+  {
+    "id": "2604.06296",
+    "overview": "AgentOpt 将效率优化移到 Agent 开发者一侧：在给定工作流、模型候选与评估预算下，寻找各角色的模型组合。它强调最强的单模型不一定形成最好的多阶段组合，因为 planner 的行为会改变 solver 或 critic 实际收到的任务。系统提供统一执行和计量层，并用多种黑盒搜索算法减少昂贵的全组合评估，目标是质量、API 成本和延迟之间的选择。",
+    "scenario": "面向通过远程模型 API 构建多角色 Agent 的开发者，例如 planner–solver、answerer–critic 或单模型工具循环。开发者控制候选模型、角色分工和预算，却通常无法修改服务商的 GPU 调度器；优化单位是完整 pipeline 配置及其端到端轨迹。",
+    "motivation": "服务器侧缓存和排队优化不能决定某个用户愿意用多少准确率换成本，也看不到角色间的行为耦合。逐调用选择模型或按排行榜给每个角色选最强模型可能失败；若每个角色有多个候选，暴力评估的组合空间又指数增长，需要有效分配有限评测预算。",
+    "mechanism": "将模型组合视为黑盒效用函数，统一衡量结果质量、运行时延与费用。通过 httpx 传输层拦截和 contextvars 归因，无需为每个 SDK 编写包装；缓存与并发执行层负责评估，selector 负责选下一个组合。实现 UCB-E、低秩版本、淘汰法、Epsilon-LUCB、Bayesian Optimization 等，输出排序与 Pareto frontier。",
+    "evaluation": "全部模型经 AWS Bedrock API 服务，本文没有自托管 GPU 型号/数量实验。九个候选包括 Claude 系列、gpt-oss、Kimi K2.5、Qwen3 和 Ministral。使用 HotpotQA 199 题、GPQA Diamond 198 题、MathQA 200 题、BFCL v3 Multi-Turn 200 题；两角色任务有 81 组合，单角色为 9 组合。以暴力搜索为参照，对搜索算法做 50 随机种子比较；费用按论文的 2026 年 3 月 API 价格计算。",
+    "limitations": "主要证据支持模型组合搜索，不是 GPU serving 调度。结果依赖具体候选 API、prompt、评估集与历史价格；小样本搜索所得最佳组合应另用 held-out 任务检验。",
+    "evidence": [
+      {
+        "section": "§2–3：客户端组合优化",
+        "pages": [
+          3,
+          4,
+          5
+        ],
+        "note": "角色依赖与效用函数。"
+      },
+      {
+        "section": "§4–5：运行层与搜索",
+        "pages": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "note": "HTTP 拦截、归因和 selector。"
+      },
+      {
+        "section": "§6、附录：评估",
+        "pages": [
+          11,
+          12,
+          13,
+          14,
+          20,
+          21
+        ],
+        "note": "模型 API、样本数量、基准和搜索参照。"
+      }
+    ]
+  },
+  {
+    "id": "2601.03197",
+    "overview": "Software-Defined Agentic Serving 是一篇架构立场稿：借鉴 SDN，将 Agent 通信与服务参数从应用代码中抽出来，由可编程控制面根据运行时状态调整。它通过开发者—测试者流程说明，整批传递、逐函数传递和 token streaming 在不同负载下各有优劣。本文适合建立接口与控制边界的思路，完整运行时与策略证据应结合后续系统工作阅读。",
+    "scenario": "面向多 Agent、多工具组成的服务流水线，通信粒度、路由、batch 和模型选择共同影响用户响应与集群效率。相同业务流程在低负载时可能适合 streaming，在高负载时可能更需要批处理，因此希望策略能脱离固定工作流代码动态改变。",
+    "motivation": "A2A/MCP 等协议解决互连，不直接解决何时发送、按多大粒度发送以及依据什么服务指标调节。开发者通常在编写应用时就固定通信策略，组件缺少全局队列和下游负载信息；局部优化可能把阻塞或资源浪费转移到其他 Agent。",
+    "mechanism": "提出三层架构：data plane 提供可调通信粒度与优先级；metrics plane 统一收集应用与系统信号；control plane 按全局目标调整通信、batch、路由和资源。以兼容协议的 shim 暴露 set/get 类控制接口，原型在 A2A 下接入 gRPC，并扩展 vLLM 的 KV 迁移以便控制器同时利用负载和缓存位置。",
+    "evaluation": "§3.4 的初步原型运行 MetaGPT 风格的 developer/testing 工作流，对比 streaming、完整 batch、逐函数发送及动态策略；另将 tester 扩展为两个实例，比较有无缓存迁移和提前提示的整合控制。负载图包含 2、8、32 req/s。正文未给出足够完整的 GPU 型号/数量、基模型和任务集配置，因此不能把原型结果当成可完整复现的广泛 benchmark。",
+    "limitations": "多数内容是架构主张与开放问题，控制语言、遥测一致性、策略正确性和规模化开销尚需进一步系统验证；不宜与成熟 serving 系统的全栈实验同等比较。",
+    "evidence": [
+      {
+        "section": "§1–2：早绑定与缺少全局可见性",
+        "pages": [
+          1,
+          2,
+          3
+        ],
+        "note": "动机及三种通信方式。"
+      },
+      {
+        "section": "§3：三平面与原型",
+        "pages": [
+          3,
+          4,
+          5,
+          6
+        ],
+        "note": "可编程接口、A2A/gRPC 和 vLLM 集成。"
+      },
+      {
+        "section": "§4–5：使用方向与开放问题",
+        "pages": [
+          6,
+          7
+        ],
+        "note": "立场稿的证据和实现边界。"
+      }
+    ]
+  }
+]
