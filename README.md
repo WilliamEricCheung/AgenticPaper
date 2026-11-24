@@ -2,7 +2,7 @@
 
 **2026 Agent 系统论文阅读库：离线 Rollout、在线 Serving 与 Sandbox。**
 
-[在线阅读](https://willienericcheung.github.io/AgenticPaper/) · [Release 说明](https://willienericcheung.github.io/AgenticPaper/release.html) · [GitHub Releases](https://github.com/WilliamEricCheung/AgenticPaper/releases) · [构建与维护](docs/DEPLOYMENT.md)
+[在线阅读](https://williamericcheung.github.io/AgenticPaper/) · [Release 说明](https://williamericcheung.github.io/AgenticPaper/release.html) · [GitHub Releases](https://github.com/WilliamEricCheung/AgenticPaper/releases) · [构建与维护](docs/DEPLOYMENT.md)
 
 35 篇论文均提供一段概述，以及**面向场景、论文动机、核心机制与贡献、实验设置与对比对象**四部分导读，附 PDF 物理页码依据、结论边界和有限资源切入建议。网站支持方向/用途/发表状态筛选、关键词搜索、独立分享链接、本机收藏和打印。
 

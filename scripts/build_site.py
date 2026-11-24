@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = 'https://github.com/WilliamEricCheung/AgenticPaper'
-SITE = 'https://willienericcheung.github.io/AgenticPaper'
+SITE = 'https://williamericcheung.github.io/AgenticPaper'
 VERSION = 'v1.0.0'
 DATE = '2026-11-24'
 LABELS = {'offline': '离线 Rollout', 'online': '在线 Serving', 'sandbox': 'Sandbox'}

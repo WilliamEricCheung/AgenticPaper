@@ -15,7 +15,7 @@ python3 -m http.server 8765 --bind 127.0.0.1 --directory _site
 仓库 Settings → Pages → Source 选择 **GitHub Actions**。推送 `main` 后，`.github/workflows/pages.yml` 构建并检查内容，然后上传 Pages artifact 并部署。PR 只构建检查，不部署。
 
 - 项目：<https://github.com/WilliamEricCheung/AgenticPaper>
-- 网站：<https://willienericcheung.github.io/AgenticPaper/>
+- 网站：<https://williamericcheung.github.io/AgenticPaper/>
 - 更换账号或仓库名：同步修改 `scripts/build_site.py` 的 `REPO` 与 `SITE`。
 - 创建后续版本：修改生成器的 `VERSION`、`DATE` 和 release 文案，更新 CHANGELOG，提交后创建同名 Git tag / GitHub Release。
 
