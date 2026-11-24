@@ -1,0 +1,4 @@
+interface:
+  display_name: "AgenticPaper 论文库维护"
+  short_description: "持续检索论文、核验来源、撰写系统导读并同步 GitHub 与阅读网站"
+  default_prompt: "使用 $agentic-paper-maintainer 增量更新 AgenticPaper，补齐论文导读，并发布到 GitHub、GitHub Pages 和新版本 Release。"

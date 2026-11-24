@@ -8,6 +8,35 @@
 
 导读由 AI 辅助生成并对照正文整理，未进行论文实验复现。引用具体结论前请核对原文；发现问题可提交 Issue 并附来源章节。网站源代码和原创导读采用 [MIT License](LICENSE)，第三方论文 PDF 保持原有版权与许可。
 
+## 持续维护 Skill
+
+[agentic-paper-maintainer](skills/agentic-paper-maintainer/SKILL.md) 包含增量检索、质量筛选、分类、结构化导读、版本核验及 GitHub / Pages / Release 发布流程。安装到本机 Codex 技能目录后可调用：
+
+```text
+使用 $agentic-paper-maintainer 检索上次更新以来的新论文，补齐导读，更新 GitHub、GitHub Pages 和新版本 Release。
+```
+
+仅需本地整理时，在请求中注明“只更新本地，不发布”。技能源文件保存在 `skills/agentic-paper-maintainer/`，修改后需同步本机安装副本。
+
+### 换电脑使用
+
+Skill 的完整源文件和参考文档随项目一起保存在 GitHub，不依赖之前的聊天记录。在新电脑上克隆项目后，可直接让 Codex 执行：
+
+```text
+请将当前项目 skills/agentic-paper-maintainer 安装到本机 Codex 技能目录，随后使用该 skill 维护当前项目。
+```
+
+macOS / Linux 首次安装也可在终端执行：
+
+```sh
+git clone https://github.com/WilliamEricCheung/AgenticPaper.git
+cd AgenticPaper
+mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
+cp -R skills/agentic-paper-maintainer "${CODEX_HOME:-$HOME/.codex}/skills/"
+```
+
+已经克隆项目时，在项目目录执行 `git pull --ff-only` 即可取得最新源文件，无需重复克隆。已安装的 skill 如有本机修改，先比较后同步，避免覆盖自己的调整；以仓库中的版本作为跨电脑维护的来源。GitHub 推送与发布所需的账号授权仍需在新电脑配置，凭据不随项目保存。
+
 ## 2026 文献目录
 
 检索与核验日期：**2026-11-24（北京时间）**。本次整理 **35 篇 PDF：新增 33 篇，保留原有 Kimi K3 与 DeltaBox 两篇**。这是围绕系统研究问题筛选的文献快照，不声称穷尽 2026 全部论文。最新收录版本更新至 **2026-11-21**。
